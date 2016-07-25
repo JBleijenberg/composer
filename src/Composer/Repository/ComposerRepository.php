@@ -190,12 +190,12 @@ class ComposerRepository extends ArrayRepository implements ConfigurableReposito
     /**
      * {@inheritDoc}
      */
-    public function search($query, $mode = 0)
+    public function search($query, $mode = 0, $type = null)
     {
         $this->loadRootServerFile();
 
         if ($this->searchUrl && $mode === self::SEARCH_FULLTEXT) {
-            $url = str_replace('%query%', $query, $this->searchUrl);
+            $url = str_replace(array('%query%', '%type%'), array($query, $type), $this->searchUrl);
 
             $hostname = parse_url($url, PHP_URL_HOST) ?: $url;
             $json = $this->rfs->getContents($hostname, $url, false);
@@ -268,14 +268,20 @@ class ComposerRepository extends ArrayRepository implements ConfigurableReposito
         }
     }
 
-    public function whatProvides(Pool $pool, $name)
+    /**
+     * @param  Pool        $pool
+     * @param  string      $name          package name
+     * @param  bool        $bypassFilters If set to true, this bypasses the stability filtering, and forces a recompute without cache
+     * @return array|mixed
+     */
+    public function whatProvides(Pool $pool, $name, $bypassFilters = false)
     {
-        if (isset($this->providers[$name])) {
+        if (isset($this->providers[$name]) && !$bypassFilters) {
             return $this->providers[$name];
         }
 
-        // skip platform packages
-        if (preg_match(PlatformRepository::PLATFORM_PACKAGE_REGEX, $name) || '__root__' === $name) {
+        // skip platform packages, root package and composer-plugin-api
+        if (preg_match(PlatformRepository::PLATFORM_PACKAGE_REGEX, $name) || '__root__' === $name || 'composer-plugin-api' === $name) {
             return array();
         }
 
@@ -354,7 +360,7 @@ class ComposerRepository extends ArrayRepository implements ConfigurableReposito
                         }
                     }
                 } else {
-                    if (!$pool->isPackageAcceptable(strtolower($version['name']), VersionParser::parseStability($version['version']))) {
+                    if (!$bypassFilters && !$pool->isPackageAcceptable(strtolower($version['name']), VersionParser::parseStability($version['version']))) {
                         continue;
                     }
 
@@ -396,7 +402,18 @@ class ComposerRepository extends ArrayRepository implements ConfigurableReposito
             }
         }
 
-        return $this->providers[$name];
+        $result = $this->providers[$name];
+
+        // clean up the cache because otherwise using this puts the repo in an inconsistent state with a polluted unfiltered cache
+        // which is likely not an issue but might cause hard to track behaviors depending on how the repo is used
+        if ($bypassFilters) {
+            foreach ($this->providers[$name] as $uid => $provider) {
+                unset($this->providersByUid[$uid]);
+            }
+            unset($this->providers[$name]);
+        }
+
+        return $result;
     }
 
     /**
@@ -625,8 +642,16 @@ class ComposerRepository extends ArrayRepository implements ConfigurableReposito
 
                 $hostname = parse_url($filename, PHP_URL_HOST) ?: $filename;
                 $rfs = $preFileDownloadEvent->getRemoteFilesystem();
+
                 $json = $rfs->getContents($hostname, $filename, false);
                 if ($sha256 && $sha256 !== hash('sha256', $json)) {
+                    // undo downgrade before trying again if http seems to be hijacked or modifying content somehow
+                    if ($this->allowSslDowngrade) {
+                        $this->url = str_replace('http://', 'https://', $this->url);
+                        $this->baseUrl = str_replace('http://', 'https://', $this->baseUrl);
+                        $filename = str_replace('http://', 'https://', $filename);
+                    }
+
                     if ($retries) {
                         usleep(100000);
 

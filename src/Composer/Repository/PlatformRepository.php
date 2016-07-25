@@ -12,11 +12,11 @@
 
 namespace Composer\Repository;
 
-use Composer\Config;
-use Composer\Package\PackageInterface;
 use Composer\Package\CompletePackage;
+use Composer\Package\PackageInterface;
 use Composer\Package\Version\VersionParser;
 use Composer\Plugin\PluginInterface;
+use Composer\Util\Silencer;
 
 /**
  * @author Jordi Boggiano <j.boggiano@seld.be>
@@ -87,6 +87,14 @@ class PlatformRepository extends ArrayRepository
             $this->addPackage($php64);
         }
 
+        // The AF_INET6 constant is only defined if ext-sockets is available but
+        // IPv6 support might still be available.
+        if (defined('AF_INET6') || Silencer::call('inet_pton', '::') !== false) {
+            $phpIpv6 = new CompletePackage('php-ipv6', $version, $prettyVersion);
+            $phpIpv6->setDescription('The PHP interpreter with IPv6 support');
+            $this->addPackage($phpIpv6);
+        }
+
         $loadedExtensions = get_loaded_extensions();
 
         // Extensions scanning
@@ -94,19 +102,25 @@ class PlatformRepository extends ArrayRepository
             if (in_array($name, array('standard', 'Core'))) {
                 continue;
             }
+            $extraDescription = null;
 
             $reflExt = new \ReflectionExtension($name);
             try {
                 $prettyVersion = $reflExt->getVersion();
                 $version = $versionParser->normalize($prettyVersion);
             } catch (\UnexpectedValueException $e) {
-                $prettyVersion = '0';
+                $extraDescription = ' (actual version: '.$prettyVersion.')';
+                if (preg_match('{^(\d+\.\d+\.\d+(?:\.\d+)?)}', $prettyVersion, $match)) {
+                    $prettyVersion = $match[1];
+                } else {
+                    $prettyVersion = '0';
+                }
                 $version = $versionParser->normalize($prettyVersion);
             }
 
             $packageName = $this->buildPackageName($name);
             $ext = new CompletePackage($packageName, $version, $prettyVersion);
-            $ext->setDescription('The '.$name.' PHP extension');
+            $ext->setDescription('The '.$name.' PHP extension' . $extraDescription);
             $this->addPackage($ext);
         }
 

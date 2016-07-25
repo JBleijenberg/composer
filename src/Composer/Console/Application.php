@@ -27,6 +27,8 @@ use Composer\IO\IOInterface;
 use Composer\IO\ConsoleIO;
 use Composer\Json\JsonValidationException;
 use Composer\Util\ErrorHandler;
+use Composer\EventDispatcher\ScriptExecutionException;
+use Composer\Exception\NoSslException;
 
 /**
  * The console application that handles the commands
@@ -54,6 +56,9 @@ class Application extends BaseApplication
 \____/\____/_/ /_/ /_/ .___/\____/____/\___/_/
                     /_/
 ';
+
+    private $hasPluginCommands = false;
+    private $disablePluginsByDefault = false;
 
     public function __construct()
     {
@@ -104,10 +109,19 @@ class Application extends BaseApplication
      */
     public function doRun(InputInterface $input, OutputInterface $output)
     {
+        $this->disablePluginsByDefault = $input->hasParameterOption('--no-plugins');
+
         $io = $this->io = new ConsoleIO($input, $output, $this->getHelperSet());
         ErrorHandler::register($io);
 
-        // determine command name to be executed
+        // switch working dir
+        if ($newWorkDir = $this->getNewWorkingDir($input)) {
+            $oldWorkingDir = getcwd();
+            chdir($newWorkDir);
+            $io->writeError('Changed CWD to ' . getcwd(), true, IOInterface::DEBUG);
+        }
+
+        // determine command name to be executed without including plugin commands
         $commandName = '';
         if ($name = $this->getCommandName($input)) {
             try {
@@ -116,7 +130,42 @@ class Application extends BaseApplication
             }
         }
 
-        if ($commandName !== 'global') {
+        if (!$this->disablePluginsByDefault && !$this->hasPluginCommands && 'global' !== $commandName) {
+            try {
+                foreach ($this->getPluginCommands() as $command) {
+                    if ($this->has($command->getName())) {
+                        $io->writeError('<warning>Plugin command '.$command->getName().' ('.get_class($command).') would override a Composer command and has been skipped</warning>');
+                    } else {
+                        $this->add($command);
+                    }
+                }
+            } catch (NoSslException $e) {
+                // suppress these as they are not relevant at this point
+            }
+
+            $this->hasPluginCommands = true;
+        }
+
+        // determine command name to be executed incl plugin commands, and check if it's a proxy command
+        $isProxyCommand = false;
+        if ($name = $this->getCommandName($input)) {
+            try {
+                $command = $this->find($name);
+                $commandName = $command->getName();
+                $isProxyCommand = ($command instanceof Command\BaseCommand && $command->isProxyCommand());
+            } catch (\InvalidArgumentException $e) {
+            }
+        }
+
+        if (!$isProxyCommand) {
+            $io->writeError(sprintf(
+                'Running %s (%s) with %s on %s',
+                Composer::VERSION,
+                Composer::RELEASE_DATE,
+                defined('HHVM_VERSION') ? 'HHVM '.HHVM_VERSION : 'PHP '.PHP_VERSION,
+                php_uname('s') . ' / ' . php_uname('r')
+            ), true, IOInterface::DEBUG);
+
             if (PHP_VERSION_ID < 50302) {
                 $io->writeError('<warning>Composer only officially supports PHP 5.3.2 and above, you will most likely encounter problems with your PHP '.PHP_VERSION.', upgrading is strongly recommended.</warning>');
             }
@@ -133,12 +182,28 @@ class Application extends BaseApplication
                 $input->setInteractive(false);
             }
 
-            // switch working dir
-            if ($newWorkDir = $this->getNewWorkingDir($input)) {
-                $oldWorkingDir = getcwd();
-                chdir($newWorkDir);
-                $io->writeError('Changed CWD to ' . getcwd(), true, IOInterface::DEBUG);
+            if (!Platform::isWindows() && function_exists('exec') && !getenv('COMPOSER_ALLOW_SUPERUSER')) {
+                if (function_exists('posix_getuid') && posix_getuid() === 0) {
+                    if ($commandName !== 'self-update' && $commandName !== 'selfupdate') {
+                        $io->writeError('<warning>Do not run Composer as root/super user! See https://getcomposer.org/root for details</warning>');
+                    }
+                    if ($uid = (int) getenv('SUDO_UID')) {
+                        // Silently clobber any sudo credentials on the invoking user to avoid privilege escalations later on
+                        // ref. https://github.com/composer/composer/issues/5119
+                        Silencer::call('exec', "sudo -u \\#{$uid} sudo -K > /dev/null 2>&1");
+                    }
+                }
+                // Silently clobber any remaining sudo leases on the current user as well to avoid privilege escalations
+                Silencer::call('exec', 'sudo -K > /dev/null 2>&1');
             }
+
+            // Check system temp folder for usability as it can cause weird runtime issues otherwise
+            Silencer::call(function () use ($io) {
+                $tempfile = sys_get_temp_dir() . '/temp-' . md5(microtime());
+                if (!(file_put_contents($tempfile, __FILE__) && (file_get_contents($tempfile) == __FILE__) && unlink($tempfile) && !file_exists($tempfile))) {
+                    $io->writeError(sprintf('<error>PHP temp directory (%s) does not exist or is not writable to Composer. Set sys_temp_dir in your php.ini</error>', sys_get_temp_dir()));
+                }
+            });
 
             // add non-standard scripts as own commands
             $file = Factory::getComposerFile();
@@ -147,7 +212,7 @@ class Application extends BaseApplication
                     foreach ($composer['scripts'] as $script => $dummy) {
                         if (!defined('Composer\Script\ScriptEvents::'.str_replace('-', '_', strtoupper($script)))) {
                             if ($this->has($script)) {
-                                $io->writeError('<warning>A script named '.$script.' would override a native Composer function and has been skipped</warning>');
+                                $io->writeError('<warning>A script named '.$script.' would override a Composer command and has been skipped</warning>');
                             } else {
                                 $this->add(new Command\ScriptAliasCommand($script));
                             }
@@ -173,9 +238,14 @@ class Application extends BaseApplication
                 $io->writeError('<info>Memory usage: '.round(memory_get_usage() / 1024 / 1024, 2).'MB (peak: '.round(memory_get_peak_usage() / 1024 / 1024, 2).'MB), time: '.round(microtime(true) - $startTime, 2).'s');
             }
 
+            restore_error_handler();
+
             return $result;
+        } catch (ScriptExecutionException $e) {
+            return $e->getCode();
         } catch (\Exception $e) {
             $this->hintCommonErrors($e);
+            restore_error_handler();
             throw $e;
         }
     }
@@ -233,12 +303,16 @@ class Application extends BaseApplication
 
     /**
      * @param  bool                    $required
-     * @param  bool                    $disablePlugins
+     * @param  bool|null               $disablePlugins
      * @throws JsonValidationException
      * @return \Composer\Composer
      */
-    public function getComposer($required = true, $disablePlugins = false)
+    public function getComposer($required = true, $disablePlugins = null)
     {
+        if (null === $disablePlugins) {
+            $disablePlugins = $this->disablePluginsByDefault;
+        }
+
         if (null === $this->composer) {
             try {
                 $this->composer = Factory::create($this->io, null, $disablePlugins);
@@ -308,6 +382,7 @@ class Application extends BaseApplication
             new Command\RemoveCommand(),
             new Command\HomeCommand(),
             new Command\ExecCommand(),
+            new Command\OutdatedCommand(),
         ));
 
         if ('phar:' === substr(__FILE__, 0, 5)) {
@@ -342,8 +417,37 @@ class Application extends BaseApplication
     {
         $definition = parent::getDefaultInputDefinition();
         $definition->addOption(new InputOption('--profile', null, InputOption::VALUE_NONE, 'Display timing and memory usage information'));
+        $definition->addOption(new InputOption('--no-plugins', null, InputOption::VALUE_NONE, 'Whether to disable plugins.'));
         $definition->addOption(new InputOption('--working-dir', '-d', InputOption::VALUE_REQUIRED, 'If specified, use the given directory as working directory.'));
 
         return $definition;
+    }
+
+    private function getPluginCommands()
+    {
+        $commands = array();
+
+        $composer = $this->getComposer(false, false);
+        if (null === $composer) {
+            $composer = Factory::createGlobal($this->io, false);
+        }
+
+        if (null !== $composer) {
+            $pm = $composer->getPluginManager();
+            foreach ($pm->getPluginCapabilities('Composer\Plugin\Capability\CommandProvider', array('composer' => $composer, 'io' => $this->io)) as $capability) {
+                $newCommands = $capability->getCommands();
+                if (!is_array($newCommands)) {
+                    throw new \UnexpectedValueException('Plugin capability '.get_class($capability).' failed to return an array from getCommands');
+                }
+                foreach ($newCommands as $command) {
+                    if (!$command instanceof Command\BaseCommand) {
+                        throw new \UnexpectedValueException('Plugin capability '.get_class($capability).' returned an invalid value, we expected an array of Composer\Command\BaseCommand objects');
+                    }
+                }
+                $commands = array_merge($commands, $newCommands);
+            }
+        }
+
+        return $commands;
     }
 }

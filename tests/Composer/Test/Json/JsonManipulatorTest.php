@@ -2045,6 +2045,31 @@ class JsonManipulatorTest extends \PHPUnit_Framework_TestCase
 ', $manipulator->getContents());
     }
 
+    public function testAddMainKeyWithContentHavingDollarSignFollowedByDigit()
+    {
+        $manipulator = new JsonManipulator('{
+    "foo": "bar"
+}');
+
+        $this->assertTrue($manipulator->addMainKey('bar', '$1baz'));
+        $this->assertEquals('{
+    "foo": "bar",
+    "bar": "$1baz"
+}
+', $manipulator->getContents());
+    }
+
+    public function testAddMainKeyWithContentHavingDollarSignFollowedByDigit2()
+    {
+        $manipulator = new JsonManipulator('{}');
+
+        $this->assertTrue($manipulator->addMainKey('foo', '$1bar'));
+        $this->assertEquals('{
+    "foo": "$1bar"
+}
+', $manipulator->getContents());
+    }
+
     public function testUpdateMainKey()
     {
         $manipulator = new JsonManipulator('{
@@ -2103,6 +2128,80 @@ class JsonManipulatorTest extends \PHPUnit_Framework_TestCase
     }
 }
 ', $manipulator->getContents());
+    }
+
+    public function testUpdateMainKeyWithContentHavingDollarSignFollowedByDigit()
+    {
+        $manipulator = new JsonManipulator('{
+    "foo": "bar"
+}');
+
+        $this->assertTrue($manipulator->addMainKey('foo', '$1bar'));
+        $this->assertEquals('{
+    "foo": "$1bar"
+}
+', $manipulator->getContents());
+    }
+
+    public function testRemoveMainKey()
+    {
+        $manipulator = new JsonManipulator('{
+    "repositories": [
+        {
+            "package": {
+                "require": {
+                    "this/should-not-end-up-in-root-require": "~2.0"
+                },
+                "require-dev": {
+                    "this/should-not-end-up-in-root-require-dev": "~2.0"
+                }
+            }
+        }
+    ],
+    "require": {
+        "package/a": "*",
+        "package/b": "*",
+        "package/c": "*"
+    },
+    "foo": "bar",
+    "require-dev": {
+        "package/d": "*"
+    }
+}');
+
+        $this->assertTrue($manipulator->removeMainKey('repositories'));
+        $this->assertEquals('{
+    "require": {
+        "package/a": "*",
+        "package/b": "*",
+        "package/c": "*"
+    },
+    "foo": "bar",
+    "require-dev": {
+        "package/d": "*"
+    }
+}
+', $manipulator->getContents());
+
+        $this->assertTrue($manipulator->removeMainKey('foo'));
+        $this->assertEquals('{
+    "require": {
+        "package/a": "*",
+        "package/b": "*",
+        "package/c": "*"
+    },
+    "require-dev": {
+        "package/d": "*"
+    }
+}
+', $manipulator->getContents());
+
+        $this->assertTrue($manipulator->removeMainKey('require'));
+        $this->assertTrue($manipulator->removeMainKey('require-dev'));
+        $this->assertEquals('{
+}
+', $manipulator->getContents());
+
     }
 
     public function testIndentDetection()

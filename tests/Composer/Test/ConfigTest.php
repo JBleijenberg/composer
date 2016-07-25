@@ -13,7 +13,6 @@
 namespace Composer\Test;
 
 use Composer\Config;
-use Composer\Downloader\TransportException;
 
 class ConfigTest extends \PHPUnit_Framework_TestCase
 {
@@ -151,7 +150,7 @@ class ConfigTest extends \PHPUnit_Framework_TestCase
 
         $home = rtrim(getenv('HOME') ?: getenv('USERPROFILE'), '\\/');
         $this->assertEquals('b', $config->get('c'));
-        $this->assertEquals($home.'/', $config->get('bin-dir'));
+        $this->assertEquals($home, $config->get('bin-dir'));
         $this->assertEquals($home.'/foo', $config->get('cache-dir'));
     }
 
@@ -251,8 +250,11 @@ class ConfigTest extends \PHPUnit_Framework_TestCase
             '\\myserver\myplace.git',
             'file://myserver.localhost/mygit.git',
             'file://example.org/mygit.git',
+            'git:Department/Repo.git',
+            'ssh://[user@]host.xz[:port]/path/to/repo.git/',
         );
-        return array_combine($urls, array_map(function($e) { return array($e); }, $urls));
+
+        return array_combine($urls, array_map(function ($e) { return array($e); }, $urls));
     }
 
     /**
@@ -270,9 +272,10 @@ class ConfigTest extends \PHPUnit_Framework_TestCase
             'svn://1.2.3.4/trunk',
             'git://5.6.7.8/git.git',
         );
-        return array_combine($urls, array_map(function($e) { return array($e); }, $urls));
+
+        return array_combine($urls, array_map(function ($e) { return array($e); }, $urls));
     }
-    
+
     /**
      * @group TLS
      */

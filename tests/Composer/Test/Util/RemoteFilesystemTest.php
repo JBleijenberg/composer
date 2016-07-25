@@ -136,14 +136,14 @@ class RemoteFilesystemTest extends \PHPUnit_Framework_TestCase
         $io = $this->getMock('Composer\IO\IOInterface');
         $io->expects($this->once())
             ->method('setAuthentication')
-            ->with($this->equalTo('example.com'), $this->equalTo('user'), $this->equalTo('pass'));
+            ->with($this->equalTo('github.com'), $this->equalTo('user'), $this->equalTo('pass'));
 
         $fs = new RemoteFilesystem($io);
         try {
-            $fs->getContents('example.com', 'http://user:pass@www.example.com/something');
+            $fs->getContents('github.com', 'https://user:pass@github.com/composer/composer/404');
         } catch (\Exception $e) {
             $this->assertInstanceOf('Composer\Downloader\TransportException', $e);
-            $this->assertEquals(404, $e->getCode());
+            $this->assertNotEquals(200, $e->getCode());
         }
     }
 
@@ -175,7 +175,7 @@ class RemoteFilesystemTest extends \PHPUnit_Framework_TestCase
         $res = $this->callGetOptionsForUrl($io, array('example.org', array('ssl' => array('cafile' => '/some/path/file.crt'))), array(), 'http://www.example.org');
 
         $this->assertTrue(isset($res['ssl']['ciphers']));
-        $this->assertRegExp("|!aNULL:!eNULL:!EXPORT:!DES:!3DES:!MD5:!PSK|", $res['ssl']['ciphers']);
+        $this->assertRegExp("|!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!aECDH:!EDH-DSS-DES-CBC3-SHA:!EDH-RSA-DES-CBC3-SHA:!KRB5-DES-CBC3-SHA|", $res['ssl']['ciphers']);
         $this->assertTrue($res['ssl']['verify_peer']);
         $this->assertTrue($res['ssl']['SNI_enabled']);
         $this->assertEquals(7, $res['ssl']['verify_depth']);

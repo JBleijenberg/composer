@@ -13,12 +13,15 @@
 namespace Composer\DependencyResolver;
 
 use Composer\Package\CompletePackage;
+use Composer\Package\PackageInterface;
+use Composer\Package\Link;
 
 /**
  * @author Nils Adermann <naderman@naderman.de>
  */
 class Rule
 {
+    // reason constants
     const RULE_INTERNAL_ALLOW_UPDATE = 1;
     const RULE_JOB_INSTALL = 2;
     const RULE_JOB_REMOVE = 3;
@@ -31,6 +34,7 @@ class Rule
     const RULE_LEARNED = 12;
     const RULE_PACKAGE_ALIAS = 13;
 
+    // bitfield defs
     const BITFIELD_TYPE = 0;
     const BITFIELD_REASON = 8;
     const BITFIELD_DISABLED = 16;
@@ -44,6 +48,12 @@ class Rule
     protected $bitfield;
     protected $reasonData;
 
+    /**
+     * @param array                 $literals
+     * @param int                   $reason     A RULE_* constant describing the reason for generating this rule
+     * @param Link|PackageInterface $reasonData
+     * @param array                 $job        The job this rule was created from
+     */
     public function __construct(array $literals, $reason, $reasonData, $job = null)
     {
         // sort all packages ascending by id
@@ -198,40 +208,50 @@ class Rule
                         // handle php/hhvm
                         if (defined('HHVM_VERSION')) {
                             return $text . ' -> your HHVM version does not satisfy that requirement.';
-                        } elseif ($targetName === 'hhvm') {
-                            return $text . ' -> you are running this with PHP and not HHVM.';
-                        } else {
-                            $packages = $pool->whatProvides($targetName);
-                            $package = count($packages) ? current($packages) : phpversion();
-
-                            if (!($package instanceof CompletePackage)) {
-                                return $text . ' -> your PHP version ('.phpversion().') does not satisfy that requirement.';
-                            }
-
-                            $extra = $package->getExtra();
-
-                            if (!empty($extra['config.platform'])) {
-                                $text .= ' -> your PHP version ('.phpversion().') overriden by "config.platform.php" version ('.$package->getPrettyVersion().') does not satisfy that requirement.';
-                            } else {
-                                $text .= ' -> your PHP version ('.$package->getPrettyVersion().') does not satisfy that requirement.';
-                            }
-
-                            return $text;
                         }
-                    } elseif (0 === strpos($targetName, 'ext-')) {
+
+                        if ($targetName === 'hhvm') {
+                            return $text . ' -> you are running this with PHP and not HHVM.';
+                        }
+
+                        $packages = $pool->whatProvides($targetName);
+                        $package = count($packages) ? current($packages) : phpversion();
+
+                        if (!($package instanceof CompletePackage)) {
+                            return $text . ' -> your PHP version ('.phpversion().') does not satisfy that requirement.';
+                        }
+
+                        $extra = $package->getExtra();
+
+                        if (!empty($extra['config.platform'])) {
+                            $text .= ' -> your PHP version ('.phpversion().') overridden by "config.platform.php" version ('.$package->getPrettyVersion().') does not satisfy that requirement.';
+                        } else {
+                            $text .= ' -> your PHP version ('.$package->getPrettyVersion().') does not satisfy that requirement.';
+                        }
+
+                        return $text;
+                    }
+
+                    if (0 === strpos($targetName, 'ext-')) {
                         // handle php extensions
                         $ext = substr($targetName, 4);
                         $error = extension_loaded($ext) ? 'has the wrong version ('.(phpversion($ext) ?: '0').') installed' : 'is missing from your system';
 
                         return $text . ' -> the requested PHP extension '.$ext.' '.$error.'.';
-                    } elseif (0 === strpos($targetName, 'lib-')) {
+                    }
+
+                    if (0 === strpos($targetName, 'lib-')) {
                         // handle linked libs
                         $lib = substr($targetName, 4);
 
                         return $text . ' -> the requested linked library '.$lib.' has the wrong version installed or is missing from your system, make sure to have the extension providing it.';
-                    } else {
-                        return $text . ' -> no matching package found.';
                     }
+
+                    if ($providers = $pool->whatProvides($targetName, $this->reasonData->getConstraint(), true, true)) {
+                        return $text . ' -> satisfiable by ' . $this->formatPackagesUnique($pool, $providers) .' but these conflict with your requirements or minimum-stability.';
+                    }
+
+                    return $text . ' -> no matching package found.';
                 }
 
                 return $text;

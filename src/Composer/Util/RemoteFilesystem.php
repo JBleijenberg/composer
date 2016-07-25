@@ -15,6 +15,8 @@ namespace Composer\Util;
 use Composer\Config;
 use Composer\IO\IOInterface;
 use Composer\Downloader\TransportException;
+use Composer\CaBundle\CaBundle;
+use Psr\Log\LoggerInterface;
 
 /**
  * @author François Pluchino <francois.pluchino@opendisplay.com>
@@ -231,13 +233,21 @@ class RemoteFilesystem
         $origFileUrl = $fileUrl;
 
         if (isset($options['github-token'])) {
-            $fileUrl .= (false === strpos($fileUrl, '?') ? '?' : '&') . 'access_token='.$options['github-token'];
+            // only add the access_token if it is actually a github URL (in case we were redirected to S3)
+            if (preg_match('{^https?://([a-z0-9-]+\.)*github\.com/}', $fileUrl)) {
+                $fileUrl .= (false === strpos($fileUrl, '?') ? '?' : '&') . 'access_token='.$options['github-token'];
+            }
             unset($options['github-token']);
         }
 
         if (isset($options['gitlab-token'])) {
             $fileUrl .= (false === strpos($fileUrl, '?') ? '?' : '&') . 'access_token='.$options['gitlab-token'];
             unset($options['gitlab-token']);
+        }
+
+        if (isset($options['bitbucket-token'])) {
+            $fileUrl .= (false === strpos($fileUrl, '?') ? '?' : '&') . 'access_token='.$options['bitbucket-token'];
+            unset($options['bitbucket-token']);
         }
 
         if (isset($options['http'])) {
@@ -247,6 +257,7 @@ class RemoteFilesystem
         if ($this->degradedMode && substr($fileUrl, 0, 21) === 'http://packagist.org/') {
             // access packagist using the resolved IPv4 instead of the hostname to force IPv4 protocol
             $fileUrl = 'http://' . gethostbyname('packagist.org') . substr($fileUrl, 20);
+            $degradedPackagist = true;
         }
 
         $ctx = StreamContextFactory::getContext($fileUrl, $options, array('notification' => array($this, 'callbackGet')));
@@ -256,13 +267,13 @@ class RemoteFilesystem
         $this->io->writeError((substr($origFileUrl, 0, 4) === 'http' ? 'Downloading ' : 'Reading ') . $origFileUrl . $usingProxy, true, IOInterface::DEBUG);
         unset($origFileUrl, $actualContextOptions);
 
-        if ($this->progress && !$isRedirect) {
-            $this->io->writeError("    Downloading: <comment>Connecting...</comment>", false);
+        // Check for secure HTTP, but allow insecure Packagist calls to $hashed providers as file integrity is verified with sha256
+        if ((substr($fileUrl, 0, 23) !== 'http://packagist.org/p/' || (false === strpos($fileUrl, '$') && false === strpos($fileUrl, '%24'))) && empty($degradedPackagist) && $this->config) {
+            $this->config->prohibitUrlByConfig($fileUrl, $this->io);
         }
 
-        // Check for secure HTTP, but allow insecure Packagist calls to $hashed providers as file integrity is verified with sha256
-        if ((substr($fileUrl, 0, 23) !== 'http://packagist.org/p/' || (false === strpos($fileUrl, '$') && false === strpos($fileUrl, '%24'))) && $this->config) {
-            $this->config->prohibitUrlByConfig($fileUrl);
+        if ($this->progress && !$isRedirect) {
+            $this->io->writeError("    Downloading: <comment>Connecting...</comment>", false);
         }
 
         $errorMessage = '';
@@ -276,6 +287,12 @@ class RemoteFilesystem
         });
         try {
             $result = file_get_contents($fileUrl, false, $ctx);
+
+            $contentLength = !empty($http_response_header[0]) ? $this->findHeaderValue($http_response_header, 'content-length') : null;
+            if ($contentLength && Platform::strlen($result) < $contentLength) {
+                // alas, this is not possible via the stream callback because STREAM_NOTIFY_COMPLETED is documented, but not implemented anywhere in PHP
+                throw new TransportException('Content-Length mismatch');
+            }
 
             if (PHP_VERSION_ID < 50600 && !empty($options['ssl']['peer_fingerprint'])) {
                 // Emulate fingerprint validation on PHP < 5.6
@@ -317,8 +334,21 @@ class RemoteFilesystem
         }
 
         $statusCode = null;
+        $contentType = null;
         if (!empty($http_response_header[0])) {
             $statusCode = $this->findStatusCode($http_response_header);
+            $contentType = $this->findHeaderValue($http_response_header, 'content-type');
+        }
+
+        // check for bitbucket login page asking to authenticate
+        if ($originUrl === 'bitbucket.org'
+            && substr($fileUrl, -4) === '.zip'
+            && preg_match('{^text/html\b}i', $contentType)
+        ) {
+            $result = false;
+            if ($this->retryAuthFailure) {
+                $this->promptAuthAndRetry(401);
+            }
         }
 
         // handle 3xx redirects for php<5.6, 304 Not Modified is excluded
@@ -418,7 +448,7 @@ class RemoteFilesystem
             // 4. To prevent any attempt at being hoodwinked by switching the
             //    certificate between steps 2 and 3 the fingerprint of the certificate
             //    presented in step 3 is compared against the one recorded in step 2.
-            if (TlsHelper::isOpensslParseSafe()) {
+            if (CaBundle::isOpensslParseSafe()) {
                 $certDetails = $this->getCertificateCnAndFp($this->fileUrl, $options);
 
                 if ($certDetails) {
@@ -520,14 +550,12 @@ class RemoteFilesystem
                 break;
 
             case STREAM_NOTIFY_FILE_SIZE_IS:
-                if ($this->bytesMax < $bytesMax) {
-                    $this->bytesMax = $bytesMax;
-                }
+                $this->bytesMax = $bytesMax;
                 break;
 
             case STREAM_NOTIFY_PROGRESS:
                 if ($this->bytesMax > 0 && $this->progress) {
-                    $progression = round($bytesTransferred / $this->bytesMax * 100);
+                    $progression = min(100, round($bytesTransferred / $this->bytesMax * 100));
 
                     if ((0 === $progression % 5) && 100 !== $progression && $progression !== $this->lastProgress) {
                         $this->lastProgress = $progression;
@@ -558,6 +586,31 @@ class RemoteFilesystem
                 && (!$this->io->isInteractive() || !$gitLabUtil->authorizeOAuthInteractively($this->scheme, $this->originUrl, $message))
             ) {
                 throw new TransportException('Could not authenticate against '.$this->originUrl, 401);
+            }
+        } elseif ($this->config && $this->originUrl === 'bitbucket.org') {
+            $askForOAuthToken = true;
+            if ($this->io->hasAuthentication($this->originUrl)) {
+                $auth = $this->io->getAuthentication($this->originUrl);
+                if ($auth['username'] !== 'x-token-auth') {
+                    $bitbucketUtil = new Bitbucket($this->io, $this->config);
+                    $token = $bitbucketUtil->requestToken($this->originUrl, $auth['username'], $auth['password']);
+                    if (! empty($token)) {
+                        $this->io->setAuthentication($this->originUrl, 'x-token-auth', $token['access_token']);
+                        $askForOAuthToken = false;
+                    }
+                } else {
+                    throw new TransportException('Could not authenticate against ' . $this->originUrl, 401);
+                }
+            }
+
+            if ($askForOAuthToken) {
+                $message = "\n".'Could not fetch ' . $this->fileUrl . ', please create a bitbucket OAuth token to ' . ($httpStatus === 401 ? 'to access private repos' : 'to go over the API rate limit');
+                $bitBucketUtil = new Bitbucket($this->io, $this->config);
+                if (! $bitBucketUtil->authorizeOAuth($this->originUrl)
+                    && (! $this->io->isInteractive() || !$bitBucketUtil->authorizeOAuthInteractively($this->originUrl, $message))
+                ) {
+                    throw new TransportException('Could not authenticate against ' . $this->originUrl, 401);
+                }
             }
         } else {
             // 404s are only handled for github
@@ -661,6 +714,10 @@ class RemoteFilesystem
                 if ($auth['password'] === 'oauth2') {
                     $headers[] = 'Authorization: Bearer '.$auth['username'];
                 }
+            } elseif ('bitbucket.org' === $originUrl
+                && $this->fileUrl !== Bitbucket::OAUTH2_ACCESS_TOKEN_URL && 'x-token-auth' === $auth['username']
+            ) {
+                $options['bitbucket-token'] = $auth['password'];
             } else {
                 $authStr = base64_encode($auth['username'] . ':' . $auth['password']);
                 $headers[] = 'Authorization: Basic '.$authStr;
@@ -751,19 +808,24 @@ class RemoteFilesystem
             'DHE-RSA-AES256-SHA',
             'AES128-GCM-SHA256',
             'AES256-GCM-SHA384',
-            'ECDHE-RSA-RC4-SHA',
-            'ECDHE-ECDSA-RC4-SHA',
-            'AES128',
-            'AES256',
-            'RC4-SHA',
-            'HIGH',
+            'AES128-SHA256',
+            'AES256-SHA256',
+            'AES128-SHA',
+            'AES256-SHA',
+            'AES',
+            'CAMELLIA',
+            'DES-CBC3-SHA',
             '!aNULL',
             '!eNULL',
             '!EXPORT',
             '!DES',
-            '!3DES',
+            '!RC4',
             '!MD5',
             '!PSK',
+            '!aECDH',
+            '!EDH-DSS-DES-CBC3-SHA',
+            '!EDH-RSA-DES-CBC3-SHA',
+            '!KRB5-DES-CBC3-SHA',
         ));
 
         /**
@@ -786,12 +848,14 @@ class RemoteFilesystem
             $defaults['ssl'] = array_replace_recursive($defaults['ssl'], $options['ssl']);
         }
 
+        $caBundleLogger = $this->io instanceof LoggerInterface ? $this->io : null;
+
         /**
          * Attempt to find a local cafile or throw an exception if none pre-set
          * The user may go download one if this occurs.
          */
         if (!isset($defaults['ssl']['cafile']) && !isset($defaults['ssl']['capath'])) {
-            $result = $this->getSystemCaRootBundlePath();
+            $result = CaBundle::getSystemCaRootBundlePath($caBundleLogger);
 
             if (preg_match('{^phar://}', $result)) {
                 $hash = hash_file('sha256', $result);
@@ -810,7 +874,7 @@ class RemoteFilesystem
             }
         }
 
-        if (isset($defaults['ssl']['cafile']) && (!is_readable($defaults['ssl']['cafile']) || !$this->validateCaFile($defaults['ssl']['cafile']))) {
+        if (isset($defaults['ssl']['cafile']) && (!is_readable($defaults['ssl']['cafile']) || !CaBundle::validateCaFile($defaults['ssl']['cafile'], $caBundleLogger))) {
             throw new TransportException('The configured cafile was not valid or could not be read.');
         }
 
@@ -826,131 +890,6 @@ class RemoteFilesystem
         }
 
         return $defaults;
-    }
-
-    /**
-     * This method was adapted from Sslurp.
-     * https://github.com/EvanDotPro/Sslurp
-     *
-     * (c) Evan Coury <me@evancoury.com>
-     *
-     * For the full copyright and license information, please see below:
-     *
-     * Copyright (c) 2013, Evan Coury
-     * All rights reserved.
-     *
-     * Redistribution and use in source and binary forms, with or without modification,
-     * are permitted provided that the following conditions are met:
-     *
-     *     * Redistributions of source code must retain the above copyright notice,
-     *       this list of conditions and the following disclaimer.
-     *
-     *     * Redistributions in binary form must reproduce the above copyright notice,
-     *       this list of conditions and the following disclaimer in the documentation
-     *       and/or other materials provided with the distribution.
-     *
-     * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-     * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-     * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-     * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
-     * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-     * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-     * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
-     * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-     * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-     * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-     *
-     * @return string
-     */
-    private function getSystemCaRootBundlePath()
-    {
-        static $caPath = null;
-
-        if ($caPath !== null) {
-            return $caPath;
-        }
-
-        // If SSL_CERT_FILE env variable points to a valid certificate/bundle, use that.
-        // This mimics how OpenSSL uses the SSL_CERT_FILE env variable.
-        $envCertFile = getenv('SSL_CERT_FILE');
-        if ($envCertFile && is_readable($envCertFile) && $this->validateCaFile($envCertFile)) {
-            return $caPath = $envCertFile;
-        }
-
-        // If SSL_CERT_DIR env variable points to a valid certificate/bundle, use that.
-        // This mimics how OpenSSL uses the SSL_CERT_FILE env variable.
-        $envCertDir = getenv('SSL_CERT_DIR');
-        if ($envCertDir && is_dir($envCertDir) && is_readable($envCertDir)) {
-            return $caPath = $envCertDir;
-        }
-
-        $configured = ini_get('openssl.cafile');
-        if ($configured && strlen($configured) > 0 && is_readable($configured) && $this->validateCaFile($configured)) {
-            return $caPath = $configured;
-        }
-
-        $configured = ini_get('openssl.capath');
-        if ($configured && is_dir($configured) && is_readable($configured)) {
-            return $caPath = $configured;
-        }
-
-        $caBundlePaths = array(
-            '/etc/pki/tls/certs/ca-bundle.crt', // Fedora, RHEL, CentOS (ca-certificates package)
-            '/etc/ssl/certs/ca-certificates.crt', // Debian, Ubuntu, Gentoo, Arch Linux (ca-certificates package)
-            '/etc/ssl/ca-bundle.pem', // SUSE, openSUSE (ca-certificates package)
-            '/usr/local/share/certs/ca-root-nss.crt', // FreeBSD (ca_root_nss_package)
-            '/usr/ssl/certs/ca-bundle.crt', // Cygwin
-            '/opt/local/share/curl/curl-ca-bundle.crt', // OS X macports, curl-ca-bundle package
-            '/usr/local/share/curl/curl-ca-bundle.crt', // Default cURL CA bunde path (without --with-ca-bundle option)
-            '/usr/share/ssl/certs/ca-bundle.crt', // Really old RedHat?
-            '/etc/ssl/cert.pem', // OpenBSD
-            '/usr/local/etc/ssl/cert.pem', // FreeBSD 10.x
-        );
-
-        foreach ($caBundlePaths as $caBundle) {
-            if (Silencer::call('is_readable', $caBundle) && $this->validateCaFile($caBundle)) {
-                return $caPath = $caBundle;
-            }
-        }
-
-        foreach ($caBundlePaths as $caBundle) {
-            $caBundle = dirname($caBundle);
-            if (is_dir($caBundle) && glob($caBundle.'/*')) {
-                return $caPath = $caBundle;
-            }
-        }
-
-        return $caPath = __DIR__.'/../../../res/cacert.pem'; // Bundled with Composer, last resort
-    }
-
-    /**
-     * @param string $filename
-     *
-     * @return bool
-     */
-    private function validateCaFile($filename)
-    {
-        static $files = array();
-
-        if (isset($files[$filename])) {
-            return $files[$filename];
-        }
-
-        $this->io->writeError('Checking CA file '.realpath($filename), true, IOInterface::DEBUG);
-        $contents = file_get_contents($filename);
-
-        // assume the CA is valid if php is vulnerable to
-        // https://www.sektioneins.de/advisories/advisory-012013-php-openssl_x509_parse-memory-corruption-vulnerability.html
-        if (!TlsHelper::isOpensslParseSafe()) {
-            $this->io->writeError(sprintf(
-                '<error>Your version of PHP, %s, is affected by CVE-2013-6420 and cannot safely perform certificate validation, we strongly suggest you upgrade.</error>',
-                PHP_VERSION
-            ));
-
-            return $files[$filename] = !empty($contents);
-        }
-
-        return $files[$filename] = (bool) openssl_x509_parse($contents);
     }
 
     /**

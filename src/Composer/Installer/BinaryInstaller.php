@@ -35,9 +35,9 @@ class BinaryInstaller
 
     /**
      * @param IOInterface $io
-     * @param string $binDir
-     * @param string $binCompat
-     * @param Filesystem $filesystem
+     * @param string      $binDir
+     * @param string      $binCompat
+     * @param Filesystem  $filesystem
      */
     public function __construct(IOInterface $io, $binDir, $binCompat, Filesystem $filesystem = null)
     {
@@ -47,7 +47,7 @@ class BinaryInstaller
         $this->filesystem = $filesystem ?: new Filesystem();
     }
 
-    public function installBinaries(PackageInterface $package, $installPath)
+    public function installBinaries(PackageInterface $package, $installPath, $warnOnOverwrite = true)
     {
         $binaries = $this->getBinaries($package);
         if (!$binaries) {
@@ -75,7 +75,9 @@ class BinaryInstaller
                     // is a fresh install of the vendor.
                     Silencer::call('chmod', $link, 0777 & ~umask());
                 }
-                $this->io->writeError('    Skipped installation of bin '.$bin.' for package '.$package->getName().': name conflicts with an existing file');
+                if ($warnOnOverwrite) {
+                    $this->io->writeError('    Skipped installation of bin '.$bin.' for package '.$package->getName().': name conflicts with an existing file');
+                }
                 continue;
             }
 
@@ -173,7 +175,7 @@ class BinaryInstaller
 
         return "@ECHO OFF\r\n".
             "setlocal DISABLEDELAYEDEXPANSION\r\n".
-            "SET BIN_TARGET=%~dp0/".trim(ProcessExecutor::escape($binPath), '"')."\r\n".
+            "SET BIN_TARGET=%~dp0/".trim(ProcessExecutor::escape($binPath), '"\'')."\r\n".
             "{$caller} \"%BIN_TARGET%\" %*\r\n";
     }
 

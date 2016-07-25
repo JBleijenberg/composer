@@ -74,14 +74,16 @@ class JsonManipulator
         if (isset($decoded[$type][$package])) {
             // update existing link
             $packageRegex = str_replace('/', '\\\\?/', preg_quote($package));
-            // addcslashes is used to double up backslashes since preg_replace resolves them as back references otherwise, see #1588
-            $links = preg_replace('{"'.$packageRegex.'"(\s*:\s*)'.self::$JSON_STRING.'}i', addcslashes(JsonFile::encode($package).'${1}"'.$constraint.'"', '\\'), $links);
+            $links = preg_replace_callback('{"'.$packageRegex.'"(\s*:\s*)'.self::$JSON_STRING.'}i', function ($m) use ($package, $constraint) {
+                return JsonFile::encode($package) . $m[1] . '"' . $constraint . '"';
+            }, $links);
         } else {
             if ($this->pregMatch('#^\s*\{\s*\S+.*?(\s*\}\s*)$#s', $links, $match)) {
                 // link missing but non empty links
                 $links = preg_replace(
                     '{'.preg_quote($match[1]).'$}',
-                    addcslashes(',' . $this->newline . $this->indent . $this->indent . JsonFile::encode($package).': '.JsonFile::encode($constraint) . $match[1], '\\'),
+                    // addcslashes is used to double up backslashes/$ since preg_replace resolves them as back references otherwise, see #1588
+                    addcslashes(',' . $this->newline . $this->indent . $this->indent . JsonFile::encode($package).': '.JsonFile::encode($constraint) . $match[1], '\\$'),
                     $links
                 );
             } else {
@@ -161,12 +163,30 @@ class JsonManipulator
         return $this->removeSubNode('config', $name);
     }
 
+    public function addProperty($name, $value)
+    {
+        if (substr($name, 0, 6) === 'extra.') {
+            return $this->addSubNode('extra', substr($name, 6), $value);
+        }
+
+        return $this->addMainKey($name, $value);
+    }
+
+    public function removeProperty($name)
+    {
+        if (substr($name, 0, 6) === 'extra.') {
+            return $this->removeSubNode('extra', substr($name, 6));
+        }
+
+        return $this->removeMainKey($name);
+    }
+
     public function addSubNode($mainNode, $name, $value)
     {
         $decoded = JsonFile::parseJson($this->contents);
 
         $subName = null;
-        if (in_array($mainNode, array('config', 'repositories')) && false !== strpos($name, '.')) {
+        if (in_array($mainNode, array('config', 'repositories', 'extra')) && false !== strpos($name, '.')) {
             list($name, $subName) = explode('.', $name, 2);
         }
 
@@ -209,6 +229,9 @@ class JsonManipulator
             $children = preg_replace_callback('{("'.preg_quote($name).'"\s*:\s*)('.self::$JSON_VALUE.')(,?)}', function ($matches) use ($name, $subName, $value, $that) {
                 if ($subName !== null) {
                     $curVal = json_decode($matches[2], true);
+                    if (!is_array($curVal)) {
+                        $curVal = array();
+                    }
                     $curVal[$subName] = $value;
                     $value = $curVal;
                 }
@@ -223,7 +246,7 @@ class JsonManipulator
             // child missing but non empty children
             $children = preg_replace(
                 '#'.$match[1].'$#',
-                addcslashes(',' . $this->newline . $this->indent . $this->indent . JsonFile::encode($name).': '.$this->format($value, 1) . $match[1], '\\'),
+                addcslashes(',' . $this->newline . $this->indent . $this->indent . JsonFile::encode($name).': '.$this->format($value, 1) . $match[1], '\\$'),
                 $children
             );
         } else {
@@ -235,7 +258,9 @@ class JsonManipulator
             $children = $this->newline . $this->indent . $this->indent . JsonFile::encode($name).': '.$this->format($value, 1) . $children;
         }
 
-        $this->contents = preg_replace($nodeRegex, addcslashes('${1}${2}'.$children.'${4}${5}', '\\'), $this->contents);
+        $this->contents = preg_replace_callback($nodeRegex, function ($m) use ($children) {
+            return $m[1] . $m[2] . $children . $m[4] . $m[5];
+        }, $this->contents);
 
         return true;
     }
@@ -271,7 +296,7 @@ class JsonManipulator
         }
 
         $subName = null;
-        if (in_array($mainNode, array('config', 'repositories')) && false !== strpos($name, '.')) {
+        if (in_array($mainNode, array('config', 'repositories', 'extra')) && false !== strpos($name, '.')) {
             list($name, $subName) = explode('.', $name, 2);
         }
 
@@ -353,7 +378,7 @@ class JsonManipulator
         if ($this->pregMatch('#[^{\s](\s*)\}$#', $this->contents, $match)) {
             $this->contents = preg_replace(
                 '#'.$match[1].'\}$#',
-                addcslashes(',' . $this->newline . $this->indent . JsonFile::encode($key). ': '. $content . $this->newline . '}', '\\'),
+                addcslashes(',' . $this->newline . $this->indent . JsonFile::encode($key). ': '. $content . $this->newline . '}', '\\$'),
                 $this->contents
             );
 
@@ -363,11 +388,39 @@ class JsonManipulator
         // append at the end of the file
         $this->contents = preg_replace(
             '#\}$#',
-            addcslashes($this->indent . JsonFile::encode($key). ': '.$content . $this->newline . '}', '\\'),
+            addcslashes($this->indent . JsonFile::encode($key). ': '.$content . $this->newline . '}', '\\$'),
             $this->contents
         );
 
         return true;
+    }
+
+    public function removeMainKey($key)
+    {
+        $decoded = JsonFile::parseJson($this->contents);
+
+        if (!isset($decoded[$key])) {
+            return true;
+        }
+
+        // key exists already
+        $regex = '{^(\s*\{\s*(?:'.self::$JSON_STRING.'\s*:\s*'.self::$JSON_VALUE.'\s*,\s*)*?)'.
+            '('.preg_quote(JsonFile::encode($key)).'\s*:\s*'.self::$JSON_VALUE.')\s*,?\s*(.*)}s';
+        if ($this->pregMatch($regex, $this->contents, $matches)) {
+            // invalid match due to un-regexable content, abort
+            if (!@json_decode('{'.$matches[2].'}')) {
+                return false;
+            }
+
+            $this->contents = $matches[1] . $matches[3];
+            if (preg_match('#^\{\s*\}\s*$#', $this->contents)) {
+                $this->contents = "{\n}";
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     public function format($data, $depth = 0)

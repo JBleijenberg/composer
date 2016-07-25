@@ -54,6 +54,7 @@ Composer fires the following named events during its execution process:
 
 ### Plugin Events
 
+- **init**: occurs after a Composer instance is done being initialized.
 - **command**: occurs before any Composer Command is executed on the CLI. It
   provides you with access to the input and output objects of the program.
 - **pre-file-download**: occurs before files are downloaded and allows
@@ -71,7 +72,7 @@ Composer fires the following named events during its execution process:
 
 The root JSON object in `composer.json` should have a property called
 `"scripts"`, which contains pairs of named events and each event's
-corresponding scripts. An event's scripts can be defined as either as a string
+corresponding scripts. An event's scripts can be defined as either a string
 (only for a single script) or an array (for single or multiple scripts.)
 
 For any given event:
@@ -149,11 +150,13 @@ class MyClass
 }
 ```
 
-When an event is fired, your PHP callback receives as first argument an
-`Composer\EventDispatcher\Event` object. This object has a `getName()` method
-that lets you retrieve event name.
+## Event classes
 
-Depending on the script types (see list above) you will get various event
+When an event is fired, your PHP callback receives as first argument a
+`Composer\EventDispatcher\Event` object. This object has a `getName()` method
+that lets you retrieve the event name.
+
+Depending on the [script types](#event-names) you will get various event
 subclasses containing various getters with relevant data and associated
 objects:
 
@@ -162,6 +165,7 @@ objects:
 - Installer Events: [`Composer\Installer\InstallerEvent`](https://getcomposer.org/apidoc/master/Composer/Installer/InstallerEvent.html)
 - Package Events: [`Composer\Installer\PackageEvent`](https://getcomposer.org/apidoc/master/Composer/Installer/PackageEvent.html)
 - Plugin Events:
+  - init: [`Composer\EventDispatcher\Event`](https://getcomposer.org/apidoc/master/Composer/EventDispatcher/Event.html)
   - command: [`Composer\Plugin\CommandEvent`](https://getcomposer.org/apidoc/master/Composer/Plugin/CommandEvent.html)
   - pre-file-download: [`Composer\Plugin\PreFileDownloadEvent`](https://getcomposer.org/apidoc/master/Composer/Plugin/PreFileDownloadEvent.html)
 
@@ -216,3 +220,23 @@ one by prefixing the command name with `@`:
     }
 }
 ```
+
+## Calling Composer commands
+
+To call Composer commands, you can use `@composer` which will automatically
+resolve to whatever composer.phar is currently being used:
+
+```json
+{
+    "scripts": {
+        "test": [
+            "@composer install",
+            "phpunit"
+        ],
+    }
+}
+```
+
+One limitation of this is that you can not call multiple composer commands in
+a row like `@composer install && @composer foo`. You must split them up in a
+JSON array of commands.

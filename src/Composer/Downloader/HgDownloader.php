@@ -26,7 +26,7 @@ class HgDownloader extends VcsDownloader
     public function doDownload(PackageInterface $package, $path, $url)
     {
         // Ensure we are allowed to use this URL by config
-        $this->config->prohibitUrlByConfig($url);
+        $this->config->prohibitUrlByConfig($url, $this->io);
 
         $url = ProcessExecutor::escape($url);
         $ref = ProcessExecutor::escape($package->getSourceReference());
@@ -47,7 +47,7 @@ class HgDownloader extends VcsDownloader
     public function doUpdate(PackageInterface $initial, PackageInterface $target, $path, $url)
     {
         // Ensure we are allowed to use this URL by config
-        $this->config->prohibitUrlByConfig($url);
+        $this->config->prohibitUrlByConfig($url, $this->io);
 
         $url = ProcessExecutor::escape($url);
         $ref = ProcessExecutor::escape($target->getSourceReference());
@@ -69,7 +69,7 @@ class HgDownloader extends VcsDownloader
     public function getLocalChanges(PackageInterface $package, $path)
     {
         if (!is_dir($path.'/.hg')) {
-            return;
+            return null;
         }
 
         $this->process->execute('hg st', $output, realpath($path));

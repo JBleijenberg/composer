@@ -81,6 +81,12 @@ downloaded via Composer. If you really absolutely need HTTP access to something
 then you can disable it, but using [Let's Encrypt](https://letsencrypt.org/) to
 get a free SSL certificate is generally a better alternative.
 
+## bitbucket-oauth
+
+A list of domain names and consumers. For example using `{"bitbucket.org":
+{"consumer-key": "myKey", "consumer-secret": "mySecret"}}`. [Read](https://confluence.atlassian.com/bitbucket/oauth-on-bitbucket-cloud-238027431.html)
+how to set up a consumer on Bitbucket.
+
 ## cafile
 
 Location of Certificate Authority file on local filesystem. In PHP 5.6+ you
@@ -96,7 +102,7 @@ capath must be a correctly hashed certificate directory.
 ## http-basic
 
 A list of domain names and username/passwords to authenticate against them. For
-example using `{"example.org": {"username": "alice", "password": "foo"}` as the
+example using `{"example.org": {"username": "alice", "password": "foo"}}` as the
 value of this option will let Composer authenticate against example.org.
 
 > **Note:** Authentication-related config options like `http-basic` and
@@ -143,7 +149,7 @@ Defaults to `$cache-dir/files`. Stores the zip archives of packages.
 ## cache-repo-dir
 
 Defaults to `$cache-dir/repo`. Stores repository metadata for the `composer`
-type and the VCS repos of type `svn`, `github` and `bitbucket`.
+type and the VCS repos of type `svn`, `fossil`, `github` and `bitbucket`.
 
 ## cache-vcs-dir
 

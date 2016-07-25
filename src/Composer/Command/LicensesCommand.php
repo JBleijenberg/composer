@@ -112,8 +112,10 @@ EOT
     /**
      * Find package requires and child requires
      *
-     * @param RepositoryInterface $repo
-     * @param PackageInterface    $package
+     * @param  RepositoryInterface $repo
+     * @param  PackageInterface    $package
+     * @param  array               $bucket
+     * @return array
      */
     private function filterRequiredPackages(RepositoryInterface $repo, PackageInterface $package, $bucket = array())
     {

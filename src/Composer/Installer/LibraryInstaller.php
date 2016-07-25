@@ -25,7 +25,7 @@ use Composer\Util\Silencer;
  * @author Jordi Boggiano <j.boggiano@seld.be>
  * @author Konstantin Kudryashov <ever.zet@gmail.com>
  */
-class LibraryInstaller implements InstallerInterface
+class LibraryInstaller implements InstallerInterface, BinaryPresenceInterface
 {
     protected $composer;
     protected $vendorDir;
@@ -40,11 +40,11 @@ class LibraryInstaller implements InstallerInterface
     /**
      * Initializes library installer.
      *
-     * @param IOInterface          $io
-     * @param Composer             $composer
-     * @param string               $type
-     * @param Filesystem           $filesystem
-     * @param BinaryInstaller      $binaryInstaller
+     * @param IOInterface     $io
+     * @param Composer        $composer
+     * @param string          $type
+     * @param Filesystem      $filesystem
+     * @param BinaryInstaller $binaryInstaller
      */
     public function __construct(IOInterface $io, Composer $composer, $type = 'library', Filesystem $filesystem = null, BinaryInstaller $binaryInstaller = null)
     {
@@ -147,6 +147,16 @@ class LibraryInstaller implements InstallerInterface
         $targetDir = $package->getTargetDir();
 
         return $basePath . ($targetDir ? '/'.$targetDir : '');
+    }
+
+    /**
+     * Make sure binaries are installed for a given package.
+     *
+     * @param PackageInterface $package Package instance
+     */
+    public function ensureBinariesPresence(PackageInterface $package)
+    {
+        $this->binaryInstaller->installBinaries($package, $this->getInstallPath($package), false);
     }
 
     /**

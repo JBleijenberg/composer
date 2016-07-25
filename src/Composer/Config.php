@@ -14,6 +14,8 @@ namespace Composer;
 
 use Composer\Config\ConfigSourceInterface;
 use Composer\Downloader\TransportException;
+use Composer\IO\IOInterface;
+use Composer\Util\Platform;
 
 /**
  * @author Jordi Boggiano <j.boggiano@seld.be>
@@ -46,6 +48,7 @@ class Config
         'classmap-authoritative' => false,
         'prepend-autoloader' => true,
         'github-domains' => array('github.com'),
+        'bitbucket-expose-hostname' => true,
         'disable-tls' => false,
         'secure-http' => true,
         'cafile' => null,
@@ -57,6 +60,7 @@ class Config
         'archive-format' => 'tar',
         'archive-dir' => '.',
         // valid keys without defaults (auth config stuff):
+        // bitbucket-oauth
         // github-oauth
         // gitlab-oauth
         // http-basic
@@ -76,9 +80,11 @@ class Config
     private $configSource;
     private $authConfigSource;
     private $useEnvironment;
+    private $warnedHosts = array();
 
     /**
-     * @param bool $useEnvironment Use COMPOSER_ environment variables to replace config settings
+     * @param bool   $useEnvironment Use COMPOSER_ environment variables to replace config settings
+     * @param string $baseDir        Optional base directory of the config
      */
     public function __construct($useEnvironment = true, $baseDir = null)
     {
@@ -119,7 +125,7 @@ class Config
         // override defaults with given config
         if (!empty($config['config']) && is_array($config['config'])) {
             foreach ($config['config'] as $key => $val) {
-                if (in_array($key, array('github-oauth', 'gitlab-oauth', 'http-basic')) && isset($this->config[$key])) {
+                if (in_array($key, array('bitbucket-oauth', 'github-oauth', 'gitlab-oauth', 'http-basic')) && isset($this->config[$key])) {
                     $this->config[$key] = array_merge($this->config[$key], $val);
                 } elseif ('preferred-install' === $key && isset($this->config[$key])) {
                     if (is_array($val) || is_array($this->config[$key])) {
@@ -205,7 +211,7 @@ class Config
                 $env = 'COMPOSER_' . strtoupper(strtr($key, '-', '_'));
 
                 $val = rtrim($this->process($this->getComposerEnv($env) ?: $this->config[$key], $flags), '/\\');
-                $val = preg_replace('#^(\$HOME|~)(/|$)#', rtrim(getenv('HOME') ?: getenv('USERPROFILE'), '/\\') . '/', $val);
+                $val = Platform::expandPath($val);
 
                 if (substr($key, -4) !== '-dir') {
                     return $val;
@@ -400,24 +406,28 @@ class Config
     /**
      * Validates that the passed URL is allowed to be used by current config, or throws an exception.
      *
-     * @param string $url
+     * @param string      $url
+     * @param IOInterface $io
      */
-    public function prohibitUrlByConfig($url)
+    public function prohibitUrlByConfig($url, IOInterface $io = null)
     {
-        if (!$this->get('secure-http')) {
+        // Return right away if the URL is malformed or custom (see issue #5173)
+        if (false === filter_var($url, FILTER_VALIDATE_URL)) {
             return;
         }
 
-        // Parse the URL into its separate parts
-        $parsed = parse_url($url);
-        if (false === $parsed || !isset($parsed['scheme'])) {
-            // If the URL is malformed or does not contain a usable scheme it's not going to work anyway
-            return;
-        }
-
-        // Throw exception on known insecure protocols
-        if (in_array($parsed['scheme'], array('http', 'git', 'ftp', 'svn'))) {
-            throw new TransportException("Your configuration does not allow connections to $url. See https://getcomposer.org/doc/06-config.md#secure-http for details.");
+        // Extract scheme and throw exception on known insecure protocols
+        $scheme = parse_url($url, PHP_URL_SCHEME);
+        if (in_array($scheme, array('http', 'git', 'ftp', 'svn'))) {
+            if ($this->get('secure-http')) {
+                throw new TransportException("Your configuration does not allow connections to $url. See https://getcomposer.org/doc/06-config.md#secure-http for details.");
+            } elseif ($io) {
+                $host = parse_url($url, PHP_URL_HOST);
+                if (!isset($this->warnedHosts[$host])) {
+                    $io->writeError("<warning>Warning: Accessing $host over $scheme which is an insecure protocol.</warning>");
+                }
+                $this->warnedHosts[$host] = true;
+            }
         }
     }
 }

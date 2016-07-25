@@ -222,7 +222,7 @@ for more information.
 ### VCS
 
 VCS stands for version control system. This includes versioning systems like
-git, svn or hg. Composer has a repository type for installing packages from
+git, svn, fossil or hg. Composer has a repository type for installing packages from
 these systems.
 
 #### Loading a package from a VCS repository
@@ -300,6 +300,7 @@ The following are supported:
 * **Git:** [git-scm.com](https://git-scm.com)
 * **Subversion:** [subversion.apache.org](https://subversion.apache.org)
 * **Mercurial:** [mercurial.selenic.com](http://mercurial.selenic.com)
+* **Fossil**: [fossil-scm.org](https://www.fossil-scm.org/)
 
 To get packages from these systems you need to have their respective clients
 installed. That can be inconvenient. And for this reason there is special
@@ -311,8 +312,8 @@ VCS repository provides `dist`s for them that fetch the packages as zips.
 * **BitBucket:** [bitbucket.org](https://bitbucket.org) (Git and Mercurial)
 
 The VCS driver to be used is detected automatically based on the URL. However,
-should you need to specify one for whatever reason, you can use `git`, `svn` or
-`hg` as the repository type instead of `vcs`.
+should you need to specify one for whatever reason, you can use `fossil`, `git`, 
+`svn` or `hg` as the repository type instead of `vcs`.
 
 If you set the `no-api` key to `true` on a github repository it will clone the
 repository as it would with any other git repository instead of using the
@@ -609,8 +610,8 @@ update to the latest version.
 ### Path
 
 In addition to the artifact repository, you can use the path one, which allows
-you to depend on a relative directory. This can be especially useful when dealing
-with monolith repositories.
+you to depend on a local directory, either absolute or relative. This can be
+especially useful when dealing with monolithic repositories.
 
 For instance, if you have the following directory structure in your repository:
 ```
@@ -649,8 +650,8 @@ the console will read `Symlinked from ../../packages/my-package`. If symlinking
 is _not_ possible the package will be copied. In that case, the console will
 output `Mirrored from ../../packages/my-package`.
 
-Instead of default fallback strategy you can force to use symlink with `"symlink": true` or
-mirroring with `"symlink": false` option.
+Instead of default fallback strategy you can force to use symlink with `"symlink": true`
+or mirroring with `"symlink": false` option.
 Forcing mirroring can be useful when deploying or generating package from a monolithic repository.
 
 ```json
@@ -667,9 +668,11 @@ Forcing mirroring can be useful when deploying or generating package from a mono
 }
 ```
 
-
-
-Instead of using a relative path, an absolute path can also be used.
+Leading tildes are expanded to the current user's home folder, and environment
+variables are parsed in both Windows and Linux/Mac notations. For example
+`~/git/mypackage` will automatically load the mypackage clone from
+`/home/<username>/git/mypackage`, equivalent to `$HOME/git/mypackage` or
+`%USERPROFILE%/git/mypackage`.
 
 > **Note:** Repository paths can also contain wildcards like ``*`` and ``?``.
 > For details, see the [PHP glob function](http://php.net/glob).

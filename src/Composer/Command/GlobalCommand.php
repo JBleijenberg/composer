@@ -76,7 +76,16 @@ EOT
 
         // create new input without "global" command prefix
         $input = new StringInput(preg_replace('{\bg(?:l(?:o(?:b(?:a(?:l)?)?)?)?)?\b}', '', $input->__toString(), 1));
+        $this->getApplication()->resetComposer();
 
         return $this->getApplication()->run($input, $output);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function isProxyCommand()
+    {
+        return true;
     }
 }

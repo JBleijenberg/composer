@@ -66,7 +66,8 @@ class GitLabDriver extends VcsDriver
 
     /**
      * Extracts information from the repository url.
-     * SSH urls uses https by default.
+     *
+     * SSH urls use https by default. Set "secure-http": false on the repository config to use http instead.
      *
      * {@inheritDoc}
      */
@@ -76,7 +77,7 @@ class GitLabDriver extends VcsDriver
             throw new \InvalidArgumentException('The URL provided is invalid. It must be the HTTP URL of a GitLab project.');
         }
 
-        $this->scheme = !empty($match['scheme']) ? $match['scheme'] : 'https';
+        $this->scheme = !empty($match['scheme']) ? $match['scheme'] : (isset($this->repoConfig['secure-http']) && $this->repoConfig['secure-http'] === false ? 'http' : 'https');
         $this->originUrl = !empty($match['domain']) ? $match['domain'] : $match['domain2'];
         $this->owner = $match['owner'];
         $this->repository = preg_replace('#(\.git)$#', '', $match['repo']);
@@ -326,7 +327,7 @@ class GitLabDriver extends VcsDriver
                         return $this->attemptCloneFallback();
                     }
                     $this->io->writeError('<warning>Failed to download ' . $this->owner . '/' . $this->repository . ':' . $e->getMessage() . '</warning>');
-                    $gitLabUtil->authorizeOAuthInteractively($this->originUrl, 'Your credentials are required to fetch private repository metadata (<info>'.$this->url.'</info>)');
+                    $gitLabUtil->authorizeOAuthInteractively($this->scheme, $this->originUrl, 'Your credentials are required to fetch private repository metadata (<info>'.$this->url.'</info>)');
 
                     return parent::getContents($url);
 
@@ -359,7 +360,7 @@ class GitLabDriver extends VcsDriver
             return false;
         }
 
-        $scheme = !empty($match['scheme']) ? $match['scheme'] : 'https';
+        $scheme = !empty($match['scheme']) ? $match['scheme'] : null;
         $originUrl = !empty($match['domain']) ? $match['domain'] : $match['domain2'];
 
         if (!in_array($originUrl, (array) $config->get('gitlab-domains'))) {

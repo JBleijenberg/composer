@@ -40,11 +40,11 @@ abstract class BaseCommand extends Command
 
     /**
      * @param  bool              $required
-     * @param  bool              $disablePlugins
+     * @param  bool|null         $disablePlugins
      * @throws \RuntimeException
      * @return Composer
      */
-    public function getComposer($required = true, $disablePlugins = false)
+    public function getComposer($required = true, $disablePlugins = null)
     {
         if (null === $this->composer) {
             $application = $this->getApplication();
@@ -77,6 +77,18 @@ abstract class BaseCommand extends Command
     {
         $this->composer = null;
         $this->getApplication()->resetComposer();
+    }
+
+    /**
+     * Whether or not this command is meant to call another command.
+     *
+     * This is mainly needed to avoid duplicated warnings messages.
+     *
+     * @return bool
+     */
+    public function isProxyCommand()
+    {
+        return false;
     }
 
     /**
